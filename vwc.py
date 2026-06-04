@@ -162,7 +162,7 @@ def init_and_sync_database(db_file, api_key, station_id, lat, elev, kc, init_vwc
 # =====================================================================
 def run_web_app():
     st.set_page_config(page_title="綠竹園智慧灌溉系統", page_icon="🎋", layout="wide")
-    st.title("🎋 綠竹園微氣候精密灌溉決策系統")
+    st.title("🎋 綠竹試驗田灌溉決策系統")
     
     # 初始化 Session State
     if "api_key" not in st.session_state: st.session_state.api_key = ""
@@ -231,7 +231,7 @@ def run_web_app():
     )
     yesterday_estimated_vwc = float(df_db["系統預估%VWC"].iloc[-1]) if not df_db.empty else st.session_state.init_vwc
 
-    tab1, tab2, tab3 = st.tabs(["📱 今日精密灌溉決策", "📊 樹林分場氣象盲推歷史庫", "⚙️ 模式與測站參數設定"])
+    tab1, tab2, tab3 = st.tabs(["📱 數值輸入及灌溉建議", "📊 樹林分場氣象資料", "⚙️ 模式與測站參數設定"])
 
     # --- 📱 分頁一：今日精密灌溉決策（🔥 全面手機化排版革新） ---
     with tab1:
@@ -307,7 +307,7 @@ def run_web_app():
         elif current_active_kpa >= 24.5:
             st.markdown("<h3 style='color:orange;'>🟡 燈號狀態：土壤缺水威脅預警 (kPa $\ge$ 24.5)</h3>", unsafe_allow_html=True)
             if is_air_pocket_error:
-                st.error(f"⚠️ **氣穴盲區警報**：觀測值已達 **{current_active_kpa} kPa** 極限上限！現地張力計指針已失真，系統已阻斷異常值，全面移交大氣水桶模型接手決策。")
+                st.error(f"⚠️ **警報**：觀測值已達 **{current_active_kpa} kPa** 極限上限！現地張力計指針已失真，系統已阻斷異常值，全面移交大氣水桶模型接手決策。")
             else:
                 st.error(f"📢 **系統決策**：土層張力已突破 **{current_active_kpa} kPa** 警戒線！綠竹即將面臨乾旱脅迫，將嚴重影響採收期外觀與甜度，**請立即補灌**！")
             
@@ -325,11 +325,11 @@ def run_web_app():
 
         # 5. 東西方交叉比對同化區「完全退居最下面」，且將 pF 隱藏
         st.markdown("---")
-        st.markdown("📊 **核心水分同化交叉比對數據（技術底層參考）**")
+        st.markdown("📊 **核心水分同化交叉比對數據**")
         col_metric1, col_metric2 = st.columns([1, 1])
         with col_metric1:
             st.metric(
-                label="當前現地張力計轉換體積含水率", 
+                label="當前張力計轉換體積含水率", 
                 value=f"{round(current_vwc_val * 100, 2)} % VWC"
             )
         with col_metric2:
@@ -340,7 +340,7 @@ def run_web_app():
 
     # --- 📊 分頁二：氣象盲推歷史庫 ---
     with tab2:
-        st.header(f"📊 {st.session_state.station_name} 氣象盲推歷史庫")
+        st.header(f"📊 {st.session_state.station_name} 氣象資料")
         if not df_db.empty:
             df_display = df_db.sort_values(by="日期", ascending=False)
             st.dataframe(df_display, use_container_width=True)
