@@ -63,7 +63,7 @@ def calculate_shulin_etc(t_max, t_min, t_dew, u2_mean, rs_solar, target_date_obj
     return round(kc * max(0.0, e_to), 2)
 
 # =====================================================================
-# 🌐 官方 API 對接大腦
+# 🌐 官方 API 對接歷史歷史大腦
 # =====================================================================
 def fetch_cwa_api_data(api_key, station_id, target_date_str):
     if not api_key or api_key.strip() == "":
@@ -105,6 +105,46 @@ def get_backup_weather_data(target_date_str):
     elif month_idx == 4 and day_idx == 24: return 20.2, 17.1, 17.3, 2.1, 32.5, 3.47, 88.0
     else:
         return round(28.5+(day_idx%4)*0.8,1), round(21.2+(day_idx%3)*0.6,1), 20.5, 1.6, (0.0 if day_idx%6!=0 else 8.0), round(17.2+(day_idx%6)*1.2,1), 75.0
+
+# =====================================================================
+# 🔮 🤖 獨家升級：中央氣象署未來一週天氣預報動態爬蟲 API
+# =====================================================================
+def fetch_cwa_forecast_data(api_key):
+    """
+    對接氣象署 F-D0047-093 (臺灣各縣市鄉鎮未來一週天氣預報)
+    自動定位至新北市樹林區，撈取未來 7 天的降雨機率與天氣特徵
+    """
+    if not api_key or api_key.strip() == "":
+        return [{"時間": "明天", "降雨機率": "20%", "天氣": "晴時多雲"}, {"時間": "後天", "降雨機率": "60%", "天氣": "午後短暫陣雨"}]
+    
+    # 新北市鄉鎮預報 API 代碼
+    url = "https://opendata.cwa.gov.tw/api/v1/rest/datastore/F-D0047-071"
+    params = {"Authorization": api_key, "LocationName": "樹林區", "ElementName": "PoP12h,WeatherDescription"}
+    
+    try:
+        response = requests.get(url, params=params, timeout=3.0)
+        if response.status_code == 200:
+            json_data = response.json()
+            location_data = json_data["records"]["Locations"][0]["Location"][0]
+            weather_elements = location_data["weatherElement"]
+            
+            forecast_list = []
+            # 解析未來降雨時段
+            pop_element = next(x for x in weather_elements if x["elementName"] == "PoP12h")
+            time_steps = pop_element["time"][:7] # 撈取最近的時段
+            
+            for index, step in enumerate(time_steps):
+                start_time = step["startTime"]
+                prob = step["elementValue"][0]["value"]
+                date_parsed = start_time.split(" ")[0].split("-")[2] + "日"
+                ampm = "白天" if "06:00" in start_time or "12:00" in start_time else "晚上"
+                
+                if prob == " " or not prob: prob = "0"
+                forecast_list.append({"時間": f"{date_parsed}({ampm})", "降雨機率": f"{prob}%", "會下雨": int(prob) >= 60})
+            return forecast_list
+    except Exception:
+        pass
+    return [{"時間": "未來兩天", "降雨機率": "30%", "會下雨": False}, {"時間": "中後期", "降雨機率": "15%", "會下雨": False}]
 
 # =====================================================================
 # 🗃️ 資料庫自動同步更新大腦
@@ -233,37 +273,30 @@ def run_web_app():
 
     tab1, tab2, tab3 = st.tabs(["📱 數值輸入及灌溉建議", "📊 樹林分場氣象資料", "⚙️ 模式與測站參數設定"])
 
-    # --- 📱 分頁一：今日精密灌溉決策（🔥 全面手機化排版革新） ---
+    # --- 📱 分頁一：今日精密灌溉決策 ---
     with tab1:
-        # 1. 頂部資訊定錨：僅保留桃改場、pF全數改為對應的 kPa 門檻，並修正名稱為「當前連線氣象站」
         st.markdown("🔍 **現地即時灌溉控制面板**")
         st.markdown("📖 **決策文獻依據**：桃園區農業改良場－綠竹採收期黃金水分安全張力區間：**15.5 ~ 24.5 kPa**（應保持濕潤但不積水）。")
         st.markdown(f"📡 **當前連線氣象站**：{st.session_state.station_name} (站號: {st.session_state.station_id} | 緯度: {st.session_state.lat}° | 海拔: {st.session_state.elev}m)")
         st.markdown("---")
 
-        # 2. 雙轨滑桿與欄位資料同化 UX 機制：解決手機拉桿太小的痛點
-        # 初始化觀測值緩存，預設為 15.0 kPa
         if "obs_kpa" not in st.session_state:
             st.session_state.obs_kpa = 15.0
 
-        # 在手機最顯眼位置提供「大觸控面積的數字輸入框」與「傳統拉桿」雙向聯動
         col_input1, col_input2 = st.columns([1, 1])
         with col_input1:
-            # 農民可以直接用點擊 +/- 按鈕，或手動打字輸入，觸控面積極大！
             kpa_input = st.number_input(
                 "📥 請輸入或點擊張力計讀值 (kPa):", 
                 min_value=0.0, max_value=35.0, 
                 value=st.session_state.obs_kpa, step=0.5, format="%.1f"
             )
         with col_input2:
-            # 拉桿同步聯動，萬一想用拉的也可以
             kpa_slider = st.slider(
                 "🕹️ 或是滑動微調數值 (kPa):", 
                 min_value=0.0, max_value=35.0, 
                 value=st.session_state.obs_kpa, step=0.5
             )
 
-        # 雙向同步核心邏輯
         if kpa_input != st.session_state.obs_kpa:
             st.session_state.obs_kpa = kpa_input
             st.rerun()
@@ -273,7 +306,6 @@ def run_web_app():
 
         current_active_kpa = st.session_state.obs_kpa
 
-        # 3. 後台 Van Genuchten 物理方程靜默換算 (前端完全不暴露 pF 符號)
         v_sat = st.session_state.theta_s
         if current_active_kpa <= 0:
             current_vwc = st.session_state.theta_s
@@ -293,50 +325,59 @@ def run_web_app():
         current_vwc_val = current_vwc if not is_air_pocket_error else yesterday_estimated_vwc / 100.0
 
         st.markdown("<br>", unsafe_allow_html=True)
-        st.subheader("📢 今日精準營運智慧指引（今日建議直接呈現）")
+        st.subheader("📢 今日精準營運智慧指引")
 
-        # 4. 依照全新微微氣候 kPa 臨界點，直接吐出「今日建議」
-        if is_saturated or current_active_kpa <= 15.5: 
-            st.markdown("<h3 style='color:green;'>🟢 燈號狀態：土壤水分極度充足 (kPa $\le$ 15.5)</h3>", unsafe_allow_html=True)
-            st.success(f"📢 **系統決策**：當前土壤張力為 **{current_active_kpa} kPa**，低於桃改場限制。水分極充沛，完全符合『濕潤但不積水』之通氣原則。**今日絕對不需要灌水**，請維持所有自動閥門關閉。")
-        
-        elif 15.5 < current_active_kpa < 24.5:
-            st.markdown("<h3 style='color:green;'>🟢 燈號狀態：桃改場黃金採收期區間 (15.5 ~ 24.5 kPa)</h3>", unsafe_allow_html=True)
-            st.info(f"📢 **系統決策**：當前土壤張力為 **{current_active_kpa} kPa**，正處於最完美的黃金產量濕度環境！此狀態下綠竹筍鮮嫩且通氣良好。**今日無須追加灌溉**，請持續追蹤。")
-        
-        elif current_active_kpa >= 24.5:
-            st.markdown("<h3 style='color:orange;'>🟡 燈號狀態：土壤缺水威脅預警 (kPa $\ge$ 24.5)</h3>", unsafe_allow_html=True)
-            if is_air_pocket_error:
-                st.error(f"⚠️ **警報**：觀測值已達 **{current_active_kpa} kPa** 極限上限！現地張力計指針已失真，系統已阻斷異常值，全面移交大氣水桶模型接手決策。")
-            else:
-                st.error(f"📢 **系統決策**：土層張力已突破 **{current_active_kpa} kPa** 警戒線！綠竹即將面臨乾旱脅迫，將嚴重影響採收期外觀與甜度，**請立即補灌**！")
+        # 🔮 🤖 智慧型天氣預報攔截系統啟動
+        forecast_data = fetch_cwa_forecast_data(st.session_state.api_key)
+        # 檢查未來 24-48 小時內是否會下大雨
+        will_rain_soon = any(x.get("會下雨", False) for x in forecast_data[:2])
+
+        if will_rain_soon and current_active_kpa >= 24.5:
+            st.markdown("<h3 style='color:#005caf;'>🔵 燈號狀態：大氣降雨節水防禦啟動</h3>", unsafe_allow_html=True)
+            st.info(f"⚖️ **智慧決策中斷**：雖然目前現地張力已達 **{current_active_kpa} kPa** 警戒線，但系統動態偵測到**未來兩天內樹林區有極高降雨機率（詳見下方天氣預報）**！為避免重複灌溉造成「根系積水不透氣」並節省水資源電費，**建議今日暫緩追加灌溉**，實施天候自然補水。")
+        else:
+            # 正常權威文獻建議區間呈現
+            if is_saturated or current_active_kpa <= 15.5: 
+                st.markdown("<h3 style='color:green;'>🟢 燈號狀態：土壤水分極度充足 (kPa $\le$ 15.5)</h3>", unsafe_allow_html=True)
+                st.success(f"📢 **系統決策**：當前土壤張力為 **{current_active_kpa} kPa**。水分極充沛，完全符合『保持濕潤但不積水』之原則。**今日絕對不需要灌水**。")
             
-            # 計算精準補灌深度
-            water_deficit_mm = (v_sat - current_vwc_val) * st.session_state.zr
-            st.markdown(f"""
-            <div style='background-color:#fff3cd; padding:20px; border-radius:10px; border-left: 8px solid #ffc107;'>
-                <h4 style='margin:0; color:#856404;'>💧 今日建議精準補灌水深：</h4>
-                <p style='font-size:40px; font-weight:bold; margin:10px 0; color:#856404;'>{round(water_deficit_mm, 1)} mm</p>
-                <small style='color:#6c757d;'>* 依據 FAO-56 大氣平衡模式，精準回補至根系有效深度 {st.session_state.zr}mm 之田間容水量天花板。</small>
-            </div>
-            """, unsafe_allow_html=True)
-            if st.button("🤖 啟動電子閥門實施自動精密灌溉", type="primary"): 
-                st.balloons()
+            elif 15.5 < current_active_kpa < 24.5:
+                st.markdown("<h3 style='color:green;'>🟢 燈號狀態：桃改場黃金採收期區間 (15.5 ~ 24.5 kPa)</h3>", unsafe_allow_html=True)
+                st.info(f"📢 **系統決策**：當前土壤張力為 **{current_active_kpa} kPa**，正處於最完美的黃金產量濕度環境！根系環境優良。**今日無須追加灌溉**。")
+            
+            elif current_active_kpa >= 24.5:
+                st.markdown("<h3 style='color:orange;'>🟡 燈號狀態：土壤缺水威脅預警 (kPa $\ge$ 24.5)</h3>", unsafe_allow_html=True)
+                if is_air_pocket_error:
+                    st.error(f"⚠️ **警報**：觀測值已達 **{current_active_kpa} kPa** 極限上限！張力計失真，系統已阻斷異常值，由昨日大氣水桶數據接手。")
+                else:
+                    st.error(f"📢 **系統決策**：土層張力已突破 **{current_active_kpa} kPa** 警戒線！綠竹即將面臨乾旱脅迫，**請立即補灌**！")
+                
+                water_deficit_mm = (v_sat - current_vwc_val) * st.session_state.zr
+                st.markdown(f"""
+                <div style='background-color:#fff3cd; padding:20px; border-radius:10px; border-left: 8px solid #ffc107;'>
+                    <h4 style='margin:0; color:#856404;'>💧 今日建議精準補灌水深：</h4>
+                    <p style='font-size:40px; font-weight:bold; margin:10px 0; color:#856404;'>{round(water_deficit_mm, 1)} mm</p>
+                </div>
+                """, unsafe_allow_html=True)
+                if st.button("🤖 啟動電子閥門實施自動精密灌溉", type="primary"): 
+                    st.balloons()
 
-        # 5. 東西方交叉比對同化區「完全退居最下面」，且將 pF 隱藏
+        # 🔮 前瞻看板：在手機介面上秀出未來一週天氣預報
+        st.markdown("<br>", unsafe_allow_html=True)
+        with st.expander("🔮 📡 點開查看樹林試驗區：未來一週中央氣象署精密天氣預報看板"):
+            col_f = st.columns(len(forecast_data))
+            for idx, f_day in enumerate(forecast_data):
+                with col_f[idx]:
+                    st.metric(label=f_day["時間"], value=f_day["降雨機率"], delta="有雨威脅" if "會下雨" in f_day and f_day["會下雨"] else "常態天候")
+
+        # 5. 交叉同化區
         st.markdown("---")
-        st.markdown("📊 **核心水分同化交叉比對數據**")
+        st.markdown("📊 **體積含水量換算**")
         col_metric1, col_metric2 = st.columns([1, 1])
         with col_metric1:
-            st.metric(
-                label="當前張力計轉換體積含水率", 
-                value=f"{round(current_vwc_val * 100, 2)} % VWC"
-            )
+            st.metric(label="土壤水分特性曲線", value=f"{round(current_vwc_val * 100, 2)} (%VWC)")
         with col_metric2:
-            st.metric(
-                label="昨日大氣模型推估體積含水率", 
-                value=f"{round(yesterday_estimated_vwc, 1)} % VWC"
-            )
+            st.metric(label="氣象資料推估", value=f"{round(yesterday_estimated_vwc, 1)} (%VWC)")
 
     # --- 📊 分頁二：氣象盲推歷史庫 ---
     with tab2:
@@ -366,13 +407,13 @@ def run_web_app():
                 new_elev = st.number_input("測站海拔高度 (m):", value=st.session_state.elev, step=1.0)
                 new_kc = st.number_input("作物係數 Kc (依據生育旺盛期定錨):", value=st.session_state.kc, step=0.05)
             with c2:
-                st.subheader("🪣 水桶參數")
+                st.subheader("🪣 氣象資料推估")
                 new_zr = st.number_input("作物根系有效觀測深度 Zr (mm):", value=st.session_state.zr, step=10.0)
-                new_init_vwc = st.number_input("4/1 初始起始含水率 (%):", value=st.session_state.init_vwc, step=0.5)
+                new_init_vwc = st.number_input("重構初始化起始含水率 (%):", value=st.session_state.init_vwc, step=0.5, help="此為點擊重構按鈕時，回溯時間軸第一天的水桶水位線。")
             with c3:
-                st.subheader("🧬 SWCC Van Genuchten 擬合參數 (式一)")
-                new_ts = st.number_input("飽和含水率 theta_s (水桶容量天花板):", value=st.session_state.theta_s, format="%.4f")
-                new_tr = st.number_input("殘餘含水率 theta_r (極乾旱旱點底線):", value=st.session_state.theta_r, format="%.4f")
+                st.subheader("🧬 土壤水分特徵曲線 (SWCC) ")
+                new_ts = st.number_input("飽和含水率 theta_s :", value=st.session_state.theta_s, format="%.4f")
+                new_tr = st.number_input("殘餘含水率 theta_r :", value=st.session_state.theta_r, format="%.4f")
                 new_alpha = st.number_input("進氣值相關參數 alpha (cm-1):", value=st.session_state.alpha, format="%.4f")
                 new_n = st.number_input("孔隙大小分佈幾何參數 n:", value=st.session_state.n_param, format="%.4f")
                 new_m = st.number_input("特徵曲線形狀參數 m:", value=st.session_state.m_param, format="%.4f")
