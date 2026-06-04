@@ -1,5 +1,5 @@
 pandas
 openpyxl
 requests
-beautifulsoup4
-lxml
+streamlit
+geopy
