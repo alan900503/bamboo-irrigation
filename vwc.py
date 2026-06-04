@@ -391,7 +391,7 @@ def run_web_app():
         with col_metric1:
             st.metric(label="土壤水分特性曲線", value=f"{round(current_vwc_val * 100, 2)} (%VWC)")
         with col_metric2:
-            st.metric(label="氣象資料推估", value=f"{round(yesterday_estimated_vwc, 1)} %VWC")
+            st.metric(label="氣象資料推估", value=f"{round(yesterday_estimated_vwc, 1)} (%VWC)")
 
     # --- 📊 分頁二：樹林分場氣象資料 ---
     with tab2:
