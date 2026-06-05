@@ -20,11 +20,8 @@ DATABASE_FILE = "氣象盲推資料庫.xlsx"
 # ⚙️ 100% 對齊論文公式之 FAO-56 盲推模型
 # =====================================================================
 def calculate_shulin_etc(t_max, t_min, t_dew, u2_mean, rs_solar, p_mean_hpa, lat, kc):
-    """
-    完全對齊論文公式結構，導入真實「測站氣壓」與「露點溫度」
-    """
     t_mean = (t_max + t_min) / 2.0
-    p_air_kpa = p_mean_hpa / 10.0  # hPa 轉 kPa
+    p_air_kpa = p_mean_hpa / 10.0  
     gamma = 0.665 * 1e-3 * p_air_kpa
 
     def get_e_zero(t_val):
@@ -34,7 +31,6 @@ def calculate_shulin_etc(t_max, t_min, t_dew, u2_mean, rs_solar, p_mean_hpa, lat
     delta = (4098 * (0.6108 * math.exp((17.27 * t_mean) / (t_mean + 237.3)))) / ((t_mean + 237.3) ** 2)
     e_a = get_e_zero(t_dew)
 
-    # 地外輻射 R_a 計算
     day_of_year = datetime.date.today().timetuple().tm_yday
     d_r = 1 + 0.033 * math.cos((2 * math.pi / 365) * day_of_year)
     delta_solar = 0.409 * math.sin((2 * math.pi / 365) * day_of_year - 1.39)
@@ -58,7 +54,7 @@ def calculate_shulin_etc(t_max, t_min, t_dew, u2_mean, rs_solar, p_mean_hpa, lat
     return round(kc * max(0.0, e_to), 2)
 
 # =====================================================================
-# 🌐 官方唯一指定：自動氣象站歷史日觀測 API (O-A0001-001) 標準解構引擎
+# 🌐 終極容錯版：歷史日觀測 API (O-A0001-001) 解析大腦
 # =====================================================================
 def fetch_cwa_api_data(api_key, station_id, target_date_str):
     if not api_key or api_key.strip() == "":
@@ -71,45 +67,58 @@ def fetch_cwa_api_data(api_key, station_id, target_date_str):
         response = requests.get(url, params=params, timeout=3.0)
         if response.status_code == 200:
             json_data = response.json()
-            station_node = json_data["records"]["WeatherStation"][0]
-            element_list = station_node["WeatherElement"]
-            
-            # 🌟 針對氣象署自動站（72AI40）官方日清單字典代碼進行精確解析過濾
-            def find_element_value(name):
-                for el in element_list:
-                    if el.get("elementName") == name:
-                        val = el.get("elementValue")
-                        if val is not None and str(val).strip() != "" and str(val) != "None" and str(val) != "-99.0" and str(val) != "-999.0":
-                            return float(val)
-                return None
+            if "records" in json_data and "WeatherStation" in json_data["records"] and len(json_data["records"]["WeatherStation"]) > 0:
+                station_node = json_data["records"]["WeatherStation"][0]
+                element_list = station_node.get("WeatherElement", [])
+                
+                # 🚀 高級安全過濾：防止轉浮點數時因為 nested dict 或是 None 字串直接死機
+                def extract_val(name):
+                    for el in element_list:
+                        if el.get("elementName") == name:
+                            val = el.get("elementValue")
+                            if isinstance(val, dict):
+                                # 有些欄位會是字典結構，取第一個 key 的值
+                                val = list(val.values())[0]
+                            if val is not None and str(val).strip() != "" and str(val) != "None" and str(val) != "-99.0" and str(val) != "-999.0":
+                                return float(val)
+                    return None
 
-            # 📋 精準解構並抓取你指定的七大指標官方標準代碼
-            p_mean = find_element_value("PRES")                    # 1. 測站氣壓 (hPa)
-            t_max = find_element_value("Tx")                      # 2. 最高氣溫 (℃)
-            t_min = find_element_value("Tn")                      # 3. 最低氣溫 (℃)
-            u2_mean = find_element_value("WDSD")                  # 4. 風速 (m/s)
-            rain = find_element_value("Precp")                    # 5. 降水量 (mm)
-            rs_solar = find_element_value("GloRad")                # 6. 全天空日射量 (MJ/m2)
-            t_dew = find_element_value("Td")                      # 7. 露點溫度 (℃)
+                # 📋 安全撈取七大指標
+                p_mean = extract_val("PRES")
+                wind = extract_val("WDSD")
+                rain = extract_val("RAIN") if extract_val("RAIN") is not None else extract_val("NOW_RAIN")
+                solar = extract_val("GlobalSolarRadiation")
+                t_dew = extract_val("Td")
 
-            # 🛡️ 聯網異常資料自動安全同化線
-            if t_max is None or t_min is None:
-                t_avg = find_element_value("AirTemperature") if find_element_value("AirTemperature") else 26.0
-                t_max, t_min = t_avg + 3.5, t_avg - 3.5
-            if p_mean is None: p_mean = 1011.3
-            if u2_mean is None: u2_mean = 1.2
-            if rain is None or rain < 0: rain = 0.0
-            if rs_solar is None or rs_solar < 0: rs_solar = 15.0
-            if t_dew is None: t_dew = ((t_max + t_min) / 2.0) - 4.0
+                # 解析最高與最低氣溫
+                t_max, t_min = None, None
+                extreme_node = next((x for x in element_list if x.get("elementName") == "DailyExtreme"), None)
+                if extreme_node and isinstance(extreme_node.get("elementValue"), dict):
+                    ev = extreme_node["elementValue"]
+                    if "DailyMaximum" in ev and isinstance(ev["DailyMaximum"], dict):
+                        t_max = float(ev["DailyMaximum"].get("AirTemperature", 28.5))
+                    if "DailyMinimum" in ev and isinstance(ev["DailyMinimum"], dict):
+                        t_min = float(ev["DailyMinimum"].get("AirTemperature", 22.0))
+                
+                # 如果極值解析失敗，用常規平均溫降維外推
+                if t_max is None or t_min is None:
+                    t_avg = extract_val("AirTemperature") if extract_val("AirTemperature") else 26.0
+                    t_max, t_min = t_avg + 3.5, t_avg - 3.5
 
-            return p_mean, t_max, t_min, t_dew, u2_mean, rain, rs_solar
+                # 填補缺失值的安全同化底線
+                if p_mean is None: p_mean = 1011.3
+                if wind is None: wind = 1.2
+                if rain is None or rain < 0: rain = 0.0
+                if solar is None or solar < 0: solar = 15.0
+                if t_dew is None: t_dew = ((t_max + t_min) / 2.0) - 4.0
+
+                return p_mean, t_max, t_min, t_dew, wind, rain, solar
     except Exception:
         pass
 
     return get_backup_weather_data(target_date_str)
 
 def get_backup_weather_data(target_date_str):
-    """備用常態歷史資料庫基準線 (🌟 欄位完全對齊新版七大指標，防止少欄位 KeyError)"""
     day_idx = int(target_date_str.split("-")[2])
     return 1011.3, round(27.5+(day_idx%4)*0.8,1), round(20.2+(day_idx%3)*0.6,1), 20.5, 1.4, (0.0 if day_idx%6!=0 else 10.0), round(15.5+(day_idx%6)*1.2,1)
 
@@ -171,14 +180,21 @@ def fetch_cwa_seven_day_forecast(api_key):
 # 🗃️ 資料庫滾動記憶大腦
 # =====================================================================
 def init_and_sync_database(db_file, api_key, station_id, lat, kc, zr):
-    # 🌟 欄位名稱 100% 完全對齊您指定的中文名稱
     columns_list = ["日期", "測站氣壓(hPa)", "最高氣溫(℃)", "最低氣溫(℃)", "露點溫度(℃)", "風速(m/s)", "降水量(mm)", "全天空日射量(MJ/m2)", "系統預估%VWC"]
     fallback_seed_vwc = 25.50 
 
     if os.path.exists(db_file):
-        df_db = pd.read_excel(db_file)
+        try:
+            df_db = pd.read_excel(db_file)
+            # 確保欄位一致性，若不一致則強制重構
+            if "測站氣壓(hPa)" not in df_db.columns:
+                df_db = pd.DataFrame(columns=columns_list)
+        except Exception:
+            df_db = pd.DataFrame(columns=columns_list)
     else:
         df_db = pd.DataFrame(columns=columns_list)
+
+    if df_db.empty:
         today = datetime.date.today()
         lookback_days = 90 if (api_key and api_key.strip() != "") else 7
         start_date = today - datetime.timedelta(days=lookback_days)
@@ -208,7 +224,6 @@ def init_and_sync_database(db_file, api_key, station_id, lat, kc, zr):
         yesterday_vwc = float(df_db["系統預估%VWC"].iloc[-1]) if not df_db.empty else fallback_seed_vwc
         p_mean, t_max, t_min, t_dew, u2_mean, rain, rs_solar = fetch_cwa_api_data(api_key, station_id, yesterday_str)
         
-        # 雙軌補償今日大雨 (即時觀測 O-A0003-001 攔截降雨量)
         if rain == 0.0 and api_key and api_key.strip() != "":
             try:
                 live_url = "https://opendata.cwa.gov.tw/api/v1/rest/datastore/O-A0003-001"
@@ -253,14 +268,21 @@ def run_web_app():
     # 側邊欄
     st.sidebar.header("📍 綠竹田區地理定錨")
     st.sidebar.markdown(f"🎯 **現地空間定錨完成**")
-    st.sidebar.info(f"本系統已永久鎖定服務於：\n**【桃改場樹林分場】**\n經緯度：{SHULIN_LATITUDE}°N\n微氣候基地：新北市樹林區")
+    st.sidebar.info(f"本系統已永久鎖定服務於：\n**【桃改場樹林分場】**\n經緯度：{SHULIN_LATITUDE}°N")
 
-    # 讀取並滾動同步觀測資料庫
-    df_db = init_and_sync_database(
-        DATABASE_FILE, st.session_state.api_key, st.session_state.station_id,
-        st.session_state.lat, st.session_state.kc, st.session_state.zr
-    )
-    yesterday_estimated_vwc = float(df_db["系統預估%VWC"].iloc[-1]) if not df_db.empty else 25.50
+    # 🌟 頂級防禦設計：用 try-except 包裹初始化，確保即使 API 異常，網頁外殼與四大分頁依然能完美呈現，點得開第四頁！
+    try:
+        df_db = init_and_sync_database(
+            DATABASE_FILE, st.session_state.api_key, st.session_state.station_id,
+            st.session_state.lat, st.session_state.kc, st.session_state.zr
+        )
+        yesterday_estimated_vwc = float(df_db["系統預估%VWC"].iloc[-1]) if not df_db.empty else 25.50
+        has_db_error = False
+    except Exception as e:
+        df_db = pd.DataFrame()
+        yesterday_estimated_vwc = 25.50
+        has_db_error = True
+        db_error_msg = str(e)
 
     tab1, tab2, tab3, tab4 = st.tabs(["📱 數值輸入及灌溉建議", "📊 樹林分場氣象資料", "🔮 未來一週天氣預測", "⚙️ 模式與測站參數設定"])
 
@@ -270,6 +292,9 @@ def run_web_app():
         st.markdown("📖 **決策文獻依據**：桃園區農業改良場－綠竹採收期黃金水分安全張力區間：**15.5 ~ 24.5 kPa**（應保持濕潤但不積水）。")
         st.markdown(f"📡 **當前連線氣象站**：{st.session_state.station_name}")
         st.markdown("---")
+
+        if has_db_error:
+            st.warning("⚠️ 資料庫初次連線建立中或金鑰未填。請直接切換至第四頁『⚙️ 模式與測站參數設定』填寫您的氣象局授權碼。")
 
         if "obs_kpa" not in st.session_state: st.session_state.obs_kpa = 15.0
 
@@ -342,17 +367,15 @@ def run_web_app():
     # --- 📊 分頁二：樹林分場氣象資料 ---
     with tab2:
         st.header(f"📊 {st.session_state.station_name} 歷史連續日觀測紀錄資料庫")
-        if not df_db.empty:
+        if not df_db.empty and "全天空日射量(MJ/m2)" in df_db.columns:
             df_display = df_db.sort_values(by="日期", ascending=False)
             st.dataframe(df_display, use_container_width=True)
             st.markdown("---")
             st.subheader("📈 土壤含水率 (%VWC) 與全天空日射量長期動態走勢圖")
-            
-            # 🌟 這裡同步修正折線圖對應的新中文欄位名稱，100% 根除 KeyError 崩潰
             chart_data = df_db.set_index("日期")[["系統預估%VWC", "全天空日射量(MJ/m2)"]]
             st.line_chart(chart_data, y=["系統預估%VWC", "全天空日射量(MJ/m2)"])
         else:
-            st.warning("⚠️ 資料庫目前為空，請至第四頁儲存設定以初始化歷史數列。")
+            st.warning("⚠️ 資料庫目前為空，請至第四頁輸入正確的氣象局授權碼，並點擊重構按鈕。")
 
     # --- 🔮 分頁三：未來一週天氣預測 ---
     with tab3:
@@ -381,6 +404,11 @@ def run_web_app():
     # --- ⚙️ 分頁四：模式與測站參數設定 ---
     with tab4:
         st.header("⚙️ 第四頁：核心物理參數與氣象局 API 金鑰自訂面板")
+        
+        if has_db_error:
+            st.error(f"❌ 後台初始化偵測到 API 結構異動（已成功攔截阻斷防崩潰）：{db_error_msg}")
+            st.info("💡 **解法**：請在下方格子貼上正確的授權碼，點擊儲存重構按鈕。系統會強制刪除不相補的 Excel 檔案並重新下載對齊！")
+
         with st.form("parameter_form"):
             st.subheader("🔑 中央氣象署開放資料平臺授權碼連線設定")
             new_api_key = st.text_input("請貼上您的氣象局授權碼 (Authorization Token):", value=st.session_state.api_key, type="password")
@@ -412,7 +440,7 @@ def run_web_app():
                 st.session_state.n_param = new_n
                 st.session_state.m_param = new_m
                 if os.path.exists(DATABASE_FILE): os.remove(DATABASE_FILE)
-                st.success("⚙️ 參數重構成功！資料庫已依照新版 O-A0001-001 日觀測鏈完成閉環重新計算。")
+                st.success("⚙️ 參數重構成功！舊資料夾已完全清空，系統正在全新下載對齊樹林站資料...")
                 st.rerun()
 
 if __name__ == "__main__":
