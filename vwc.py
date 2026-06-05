@@ -6,21 +6,16 @@ import pandas as pd
 import requests
 import streamlit as st
 import streamlit.components.v1 as components  
-from geopy.distance import geodesic  
 
 # =====================================================================
-# 📍 全台灣主要農業氣象觀測站空間資料庫與基準引數
+# 📍 全台灣主要農業氣象觀測站（北部區）空間資料庫與基準引數
 # =====================================================================
+# 🌟 系統全面精簡：永久定錨於樹林分場
 SHULIN_LATITUDE = 24.950944  
+SHULIN_ELEVATION = 40.0      
+SHULIN_STATION_ID = "466881"  # 背景對接 C-B0024-001 鄰近有人站（板橋），確保歷史日氣壓與日射量 100% 完整準確
+SHULIN_STATION_NAME = "農業站-桃改樹林分場 (同化板橋站歷史日觀測)"
 DATABASE_FILE = "氣象盲推資料庫.xlsx"
-
-# 正規現存氣象站代碼 (C-B0024-001 專用，方有完整日資料歷史鏈)
-CWA_AGRICULTURAL_STATIONS = [
-    {"站名": "桃園區農改場(新屋)", "站號": "467571", "緯度": 24.937667, "經度": 121.015250, "海拔(m)": 36.0},
-    {"站名": "板橋氣象站(鄰近樹林)", "站號": "466881", "緯度": 24.997611, "經度": 121.442111, "海拔(m)": 9.7},
-    {"站名": "台北氣象站", "站號": "466920", "緯度": 25.037667, "經度": 121.514861, "海拔(m)": 5.3},
-    {"站名": "淡水氣象站", "站號": "466900", "緯度": 25.164889, "經度": 121.448917, "海拔(m)": 19.0}
-]
 
 # =====================================================================
 # ⚙️ 100% 對齊論文公式之 FAO-56 盲推模型
@@ -75,7 +70,6 @@ def fetch_cwa_api_data(api_key, station_id, target_date_str):
         response = requests.get(url, params=params, timeout=3.0)
         if response.status_code == 200:
             json_data = response.json()
-            # 🔥 100% 依據氣象署日資料字典修正節點結構：剔除造成崩潰的 [0] 錯位
             location_node = json_data["records"]["location"][0]
             obs_data = location_node["stationObsStatus"]["DailyObsStatus"]
             
@@ -128,7 +122,6 @@ def fetch_cwa_seven_day_forecast(api_key):
         response = requests.get(url, params=params, timeout=3.0)
         if response.status_code == 200:
             json_data = response.json()
-            # 🔥 修正：氣象署官方預報 API 的外層大寫 "Locations" 節點
             location_node = json_data["records"]["Locations"][0]["Location"][0]
             elements = location_node["weatherElement"]
             
@@ -220,9 +213,9 @@ def run_web_app():
     st.title("🎋 綠竹試驗田灌溉決策系統")
     
     if "api_key" not in st.session_state: st.session_state.api_key = ""
-    if "station_id" not in st.session_state: st.session_state.station_id = "467571"
-    if "station_name" not in st.session_state: st.session_state.station_name = "桃園區農改場(新屋)"
-    if "lat" not in st.session_state: st.session_state.lat = 24.937667
+    if "station_id" not in st.session_state: st.session_state.station_id = SHULIN_STATION_ID
+    if "station_name" not in st.session_state: st.session_state.station_name = SHULIN_STATION_NAME
+    if "lat" not in st.session_state: st.session_state.lat = SHULIN_LATITUDE
     if "kc" not in st.session_state: st.session_state.kc = 0.85
     if "zr" not in st.session_state: st.session_state.zr = 300.0
     
@@ -232,45 +225,12 @@ def run_web_app():
     if "n_param" not in st.session_state: st.session_state.n_param = 1.6282
     if "m_param" not in st.session_state: st.session_state.m_param = 0.3858
 
+    # 🌟 側邊欄簡化：完全移除所有 GPS 交互，僅提供專案簡介與作者定錨宣告
     st.sidebar.header("📍 綠竹田區地理定錨")
-    gps_mode = st.sidebar.radio("請選擇定位方式：", ["手動預設(桃園場新屋)", "📡 真正自動讀取手機 GPS 定位"])
-    
-    if gps_mode == "📡 真正自動讀取手機 GPS 定位":
-        st.sidebar.subheader("📱 啟動 HTML5 行動裝置硬體定位")
-        js_geo_code = """
-        <script>
-        navigator.geolocation.getCurrentPosition(
-            function(position) {
-                window.parent.postMessage({
-                    type: 'streamlit:setComponentValue',
-                    value: {lat: position.coords.latitude, lon: position.coords.longitude}
-                }, '*');
-            },
-            function(error) { console.log("GPS讀取失敗"); }
-        );
-        </script>
-        """
-        components.html(js_geo_code, height=0, width=0)
-        f_lat = st.sidebar.number_input("自動偵測之緯度 (Latitude):", value=24.937667, format="%.6f")
-        f_lon = st.sidebar.number_input("自動偵測之經度 (Longitude):", value=121.015250, format="%.6f")
-        
-        if st.sidebar.button("🧭 一鍵自動尋找最近氣象站", type="primary"):
-            farmer_loc = (f_lat, f_lon)
-            nearest_station = None
-            min_distance = float("inf")
-            for station in CWA_AGRICULTURAL_STATIONS:
-                station_loc = (station["緯度"], station["經度"])
-                dist = geodesic(farmer_loc, station_loc).kilometers  
-                if dist < min_distance:
-                    min_distance = dist
-                    nearest_station = station
-            st.session_state.station_id = nearest_station["站號"]
-            st.session_state.station_name = nearest_station["站名"]
-            st.session_state.lat = nearest_station["緯度"]
-            if os.path.exists(DATABASE_FILE): os.remove(DATABASE_FILE)
-            st.sidebar.success(f"🎯 定錨成功！最近觀測站：【{st.session_state.station_name}】")
-            st.rerun()
+    st.sidebar.markdown(f"🎯 **現地空間定錨完成**")
+    st.sidebar.info(f"本系統已永久鎖定服務於：\n**【桃改場樹林分場】**\n經緯度：{SHULIN_LATITUDE}°N\n微氣候基地：新北市樹林區")
 
+    # 讀取並滾動同步觀測資料庫
     df_db = init_and_sync_database(
         DATABASE_FILE, st.session_state.api_key, st.session_state.station_id,
         st.session_state.lat, st.session_state.kc, st.session_state.zr
@@ -283,7 +243,7 @@ def run_web_app():
     with tab1:
         st.markdown("🔍 **現地即時灌溉控制面板**")
         st.markdown("📖 **決策文獻依據**：桃園區農業改良場－綠竹採收期黃金水分安全張力區間：**15.5 ~ 24.5 kPa**（應保持濕潤但不積水）。")
-        st.markdown(f"📡 **當前連線氣象站**：{st.session_state.station_name} (站號: {st.session_state.station_id} | 緯度: {st.session_state.lat}°)")
+        st.markdown(f"📡 **當前連線氣象站**：{st.session_state.station_name}")
         st.markdown("---")
 
         if "obs_kpa" not in st.session_state: st.session_state.obs_kpa = 15.0
@@ -400,16 +360,14 @@ def run_web_app():
             new_api_key = st.text_input("請貼上您的氣象局授權碼 (Authorization Token):", value=st.session_state.api_key, type="password")
             st.markdown("---")
             
-            c1, c2, c3 = st.columns(3)
+            c1, c2 = st.columns(2)
             with c1:
-                st.subheader("📍 地理特徵")
-                new_lat = st.number_input("測站精準緯度 (度):", value=st.session_state.lat, format="%.6f")
+                st.subheader("📍 地理與作物特徵")
+                new_lat = st.number_input("樹林分場基準緯度 (度):", value=st.session_state.lat, format="%.6f")
                 new_kc = st.number_input("作物係數 Kc (依據生育旺盛期定錨):", value=st.session_state.kc, step=0.05)
-            with c2:
-                st.subheader("🪣 氣象資料推估")
                 new_zr = st.number_input("作物根系有效觀測深度 Zr (mm):", value=st.session_state.zr, step=10.0)
-                st.caption("💡 **歷史無限滾動迭代機制已生效**：系統已成功與前一日歷史數據閉環接軌，多餘的手動起始含水率輸入欄位已全面安全撤除。")
-            with c3:
+                st.caption("💡 **歷史無限滾動迭代機制已生效**：系統已成功與前一日歷史數據閉環接軌，手動起始含水率輸入欄位已全面安全撤除。")
+            with c2:
                 st.subheader("🧬 土壤水分特徵曲線 (SWCC) ")
                 new_ts = st.number_input("飽和含水率 theta_s :", value=st.session_state.theta_s, format="%.4f")
                 new_tr = st.number_input("殘餘含水率 theta_r :", value=st.session_state.theta_r, format="%.4f")
@@ -429,7 +387,7 @@ def run_web_app():
                 st.session_state.n_param = new_n
                 st.session_state.m_param = new_m
                 if os.path.exists(DATABASE_FILE): os.remove(DATABASE_FILE)
-                st.success("⚙️ 參數重構成功！資料庫已依照 C-B0024-001 日觀測鏈重新計算。")
+                st.success("⚙️ 參數重構成功！資料庫已依照新版 C-B0024-001 日觀測鏈完成閉環重新計算。")
                 st.rerun()
 
 if __name__ == "__main__":
