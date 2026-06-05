@@ -36,8 +36,7 @@ def calculate_shulin_etc(t_max, t_min, t_dew, u2_mean, rs_solar, p_mean_hpa, lat
     # 🌟 直接導入真實觀測的「露點溫度」計算實際蒸氣壓 e_a
     e_a = get_e_zero(t_dew)
 
-    # 地外輻射 R_a 計算 (今日固定常態定錨或簡化估算)
-    # 由於歷史鏈是以昨日為基準，此處採用基底緯度之標準日射外推
+    # 地外輻射 R_a 計算
     day_of_year = datetime.date.today().timetuple().tm_yday
     d_r = 1 + 0.033 * math.cos((2 * math.pi / 365) * day_of_year)
     delta_solar = 0.409 * math.sin((2 * math.pi / 365) * day_of_year - 1.39)
@@ -109,7 +108,7 @@ def fetch_cwa_api_data(api_key, station_id, target_date_str):
             solar_val = find_element("GlobalSolarRadiation")
             rs_solar = float(solar_val) if solar_val and solar_val != "None" else 15.0
             
-            # 6. 露點溫度 Td (℃) 🌟 直接讀取網頁現有欄位，免公式估算
+            # 6. 露點溫度 Td (℃) 🌟 直接讀取網頁現有欄位
             td_val = find_element("Td")
             t_dew = float(td_val) if td_val and td_val != "None" else 20.5
             
@@ -360,7 +359,7 @@ def run_web_app():
             df_display = df_db.sort_values(by="日期", ascending=False)
             st.dataframe(df_display, use_container_width=True)
             st.markdown("---")
-            st.subheader("📈 土壤含水率 (%VWC) 與作物消耗量 (ETc) 長期動態走勢圖")
+            st.subheader("📈 土壤含水率 (%VWC) 與全天空日射量長期動態走勢圖")
             chart_data = df_db.set_index("日期")[["系統預估%VWC", "全天空日射量(MJ/m2)"]]
             st.line_chart(chart_data, y=["系統預估%VWC", "全天空日射量(MJ/m2)"])
         else:
@@ -406,7 +405,7 @@ def run_web_app():
                 new_zr = st.number_input("作物根系有效觀測深度 Zr (mm):", value=st.session_state.zr, step=10.0)
             with c2:
                 st.subheader("🧬 土壤水分特徵曲線 (SWCC) ")
-                new_ ts = st.number_input("飽和含水率 theta_s :", value=st.session_state.theta_s, format="%.4f")
+                new_ts = st.number_input("飽和含水率 theta_s :", value=st.session_state.theta_s, format="%.4f")
                 new_tr = st.number_input("殘餘含水率 theta_r :", value=st.session_state.theta_r, format="%.4f")
                 new_alpha = st.number_input("進氣值相關參數 alpha (cm-1):", value=st.session_state.alpha, format="%.4f")
                 new_n = st.number_input("孔隙大小分佈幾何參數 n:", value=st.session_state.n_param, format="%.4f")
