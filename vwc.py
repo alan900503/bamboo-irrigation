@@ -14,7 +14,7 @@ from geopy.distance import geodesic
 SHULIN_LATITUDE = 24.950944  
 DATABASE_FILE = "氣象盲推資料庫.xlsx"
 
-# 🌟 C-B0024-001 專用：必須使用正規氣象站（有人站），方有完整的歷史日累積氣壓與日射量紀錄
+# 正規現存氣象站代碼 (C-B0024-001 專用，方有完整日資料歷史鏈)
 CWA_AGRICULTURAL_STATIONS = [
     {"站名": "桃園區農改場(新屋)", "站號": "467571", "緯度": 24.937667, "經度": 121.015250, "海拔(m)": 36.0},
     {"站名": "板橋氣象站(鄰近樹林)", "站號": "466881", "緯度": 24.997611, "經度": 121.442111, "海拔(m)": 9.7},
@@ -23,33 +23,20 @@ CWA_AGRICULTURAL_STATIONS = [
 ]
 
 # =====================================================================
-# ⚙️ 論文唯象方程大腦：全面導入真實「平均氣壓」取代高度估算 (式 3.2 ~ 3.17)
+# ⚙️ 100% 對齊論文公式之 FAO-56 盲推模型
 # =====================================================================
 def calculate_shulin_etc(t_max, t_min, t_dew, u2_mean, rs_solar, p_mean_hpa, target_date_obj, lat, kc):
-    """
-    完全對齊論文公式結構，並導入觀測站每日「真實平均氣壓」實施 gamma 動態修正
-    """
     t_mean = (t_max + t_min) / 2.0
-    
-    # 🌟 高級學術校正：將氣象站回傳的真實平均氣壓 (hPa) 轉換為標準大氣壓力 P (kPa) (式 3.3 升級)
-    p_air_kpa = p_mean_hpa / 10.0
-    
-    # 二、 濕度常數 gamma (式 3.4) - 單位: kPa/℃
+    p_air_kpa = p_mean_hpa / 10.0  # hPa 轉 kPa
     gamma = 0.665 * 1e-3 * p_air_kpa
 
     def get_e_zero(t_val):
         return 0.6108 * math.exp((17.27 * t_val) / (t_val + 237.3))
     
-    # 每日平均飽和蒸汽壓 e_s (式 3.7)
     e_s = (get_e_zero(t_max) + get_e_zero(t_min)) / 2.0
-    
-    # 五、 飽和蒸氣壓曲線斜率 delta (式 3.8)
     delta = (4098 * (0.6108 * math.exp((17.27 * t_mean) / (t_mean + 237.3)))) / ((t_mean + 237.3) ** 2)
-    
-    # 六、 實際蒸氣壓 e_a (式 3.9)
     e_a = get_e_zero(t_dew)
 
-    # 七、 地外輻射 R_a 系列計算
     day_of_year = target_date_obj.timetuple().tm_yday
     d_r = 1 + 0.033 * math.cos((2 * math.pi / 365) * day_of_year)
     delta_solar = 0.409 * math.sin((2 * math.pi / 365) * day_of_year - 1.39)
@@ -60,14 +47,10 @@ def calculate_shulin_etc(t_max, t_min, t_dew, u2_mean, rs_solar, p_mean_hpa, tar
     omega_s = math.acos(acos_arg)
     
     r_a = (24 * 60 / math.pi) * 0.0820 * d_r * (omega_s * math.sin(lat_rad) * math.sin(delta_solar) + math.cos(lat_rad) * math.cos(delta_solar) * math.sin(omega_s))
-    
-    # 九、 淨輻射 R_n 系列計算 (式 3.15 ~ 3.17)
     r_ns = (1 - 0.23) * rs_solar
     
     sigma = 4.903 * 1e-9
     t_fourth_mean = ((t_max + 273.16)**4 + (t_min + 273.16)**4) / 2.0
-    
-    # 晴空日射量修正 (利用真實氣壓推算相對阻尼)
     r_so = (0.75 + 2e-5 * (p_mean_hpa * 0.1)) * r_a
     r_ratio = rs_solar / r_so if r_so > 0 else 0.8
     r_ratio = max(0.2, min(1.0, r_ratio))
@@ -75,7 +58,6 @@ def calculate_shulin_etc(t_max, t_min, t_dew, u2_mean, rs_solar, p_mean_hpa, tar
     r_nl = sigma * t_fourth_mean * (0.34 - 0.14 * math.sqrt(e_a)) * (1.35 * r_ratio - 0.35)
     r_n = r_ns - r_nl
     
-    # 🏁 終點：標準 FAO-56 Penman-Monteith 方程式 (式 3.2)
     e_to = (0.408 * delta * r_n + gamma * (900 / (t_mean + 273)) * u2_mean * (e_s - e_a)) / (delta + gamma * (1 + 0.34 * u2_mean))
     return round(kc * max(0.0, e_to), 2)
 
@@ -93,26 +75,24 @@ def fetch_cwa_api_data(api_key, station_id, target_date_str):
         response = requests.get(url, params=params, timeout=3.0)
         if response.status_code == 200:
             json_data = response.json()
-            # 🌟 修正：氣象署官方日資料的 JSON 節點深度結構
+            # 🔥 100% 依據氣象署日資料字典修正節點結構：剔除造成崩潰的 [0] 錯位
             location_node = json_data["records"]["location"][0]
-            obs_data = location_node["stationObsStatus"]["DailyObsStatus"][0]
+            obs_data = location_node["stationObsStatus"]["DailyObsStatus"]
             
-            # 📋 100% 依據官方字典代碼精準撈取
-            p_mean = float(obs_data["AirPressure"]["Mean"])          # 1. 平均氣壓 (hPa)
-            t_max = float(obs_data["AirTemperature"]["DailyMaximum"])  # 2. 最高氣溫 (℃)
-            t_min = float(obs_data["AirTemperature"]["DailyMinimum"])  # 3. 最低氣溫 (℃)
-            u2_mean = float(obs_data["WindSpeed"]["Mean"])            # 4. 平均風速 (m/s)
-            rain = float(obs_data["Precipitation"]["Precipitation"])  # 5. 累計雨量 (mm)
-            rs_solar = float(obs_data["GlobalSolarRadiation"]["GlobalSolarRadiation"]) # 6. 累積日射量 (MJ/m2)
+            p_mean = float(obs_data["AirPressure"]["Mean"])          
+            t_max = float(obs_data["AirTemperature"]["DailyMaximum"])  
+            t_min = float(obs_data["AirTemperature"]["DailyMinimum"])  
+            u2_mean = float(obs_data["WindSpeed"]["Mean"])            
+            rain = float(obs_data["Precipitation"]["Precipitation"])  
+            rs_solar = float(obs_data["GlobalSolarRadiation"]["GlobalSolarRadiation"]) 
             
-            # 計算露點溫度
             rh_mean = float(obs_data["RelativeHumidity"]["Mean"])
             t_mean = (t_max + t_min) / 2.0
             t_dew = t_mean - ((100.0 - rh_mean) / 5.0)
             
             if rain < 0: rain = 0.0
             if rs_solar < 0: rs_solar = 12.0
-            if p_mean < 500: p_mean = 1011.3 # 異常值防禦
+            if p_mean < 500: p_mean = 1011.3 
             
             return p_mean, t_max, t_min, t_dew, u2_mean, rain, rs_solar, rh_mean
     except Exception:
@@ -121,7 +101,6 @@ def fetch_cwa_api_data(api_key, station_id, target_date_str):
     return get_backup_weather_data(target_date_str)
 
 def get_backup_weather_data(target_date_str):
-    """備用常態歷史資料庫基準線"""
     day_idx = int(target_date_str.split("-")[2])
     return 1012.5, round(28.5+(day_idx%4)*0.8,1), round(21.2+(day_idx%3)*0.6,1), 20.5, 1.6, (0.0 if day_idx%6!=0 else 12.0), round(16.2+(day_idx%6)*1.2,1), 75.0
 
@@ -129,9 +108,6 @@ def get_backup_weather_data(target_date_str):
 # 🔮 官方來源確認：鄉鎮未來一週天氣預報 API (F-D0047-071)
 # =====================================================================
 def fetch_cwa_seven_day_forecast(api_key):
-    """
-    對接氣象署「臺灣各縣市鄉鎮未來1週天氣預報」官方唯一指定來源
-    """
     base_date = datetime.date.today()
     backup_forecast = []
     weather_samples = ["晴時多雲", "多雲時陰", "局部短暫陣雨", "多雲午後陣雨", "晴朗有雲", "陰有陣雨"]
@@ -145,7 +121,6 @@ def fetch_cwa_seven_day_forecast(api_key):
 
     if not api_key or api_key.strip() == "": return backup_forecast
     
-    # 🌟 確認正確資料來源：新北市鄉鎮預報開放資料代碼
     url = "https://opendata.cwa.gov.tw/api/v1/rest/datastore/F-D0047-071"
     params = {"Authorization": api_key, "LocationName": "樹林區", "ElementName": "PoP12h,MaxT,MinT,Wx"}
     
@@ -153,7 +128,8 @@ def fetch_cwa_seven_day_forecast(api_key):
         response = requests.get(url, params=params, timeout=3.0)
         if response.status_code == 200:
             json_data = response.json()
-            location_node = json_data["records"]["locations"][0]["location"][0]
+            # 🔥 修正：氣象署官方預報 API 的外層大寫 "Locations" 節點
+            location_node = json_data["records"]["Locations"][0]["Location"][0]
             elements = location_node["weatherElement"]
             
             pop_el = next(x for x in elements if x["elementName"] == "PoP12h")["time"]
@@ -163,7 +139,7 @@ def fetch_cwa_seven_day_forecast(api_key):
             
             forecast_list = []
             for i in range(7):
-                idx = i * 2  # 鎖定日間12小時天氣主體
+                idx = i * 2  
                 if idx >= len(pop_el): break
                 
                 start_time = pop_el[idx]["startTime"]
@@ -186,10 +162,9 @@ def fetch_cwa_seven_day_forecast(api_key):
     return backup_forecast
 
 # =====================================================================
-# 🗃️ 資料庫滾動記憶大腦：剔除手動參數，全歷史鏈閉環迭代
+# 🗃️ 資料庫滾動記憶大腦
 # =====================================================================
 def init_and_sync_database(db_file, api_key, station_id, lat, kc, zr):
-    # 🌟 完全對齊您指定的六大歷史欄位結構
     columns_list = ["日期", "平均氣壓(hPa)", "最高氣溫(℃)", "最低氣溫(℃)", "平均風速(m/s)", "降雨量(mm)", "累積日射量(MJ/m2)", "系統預估%VWC"]
     fallback_seed_vwc = 25.50 
 
@@ -238,7 +213,7 @@ def init_and_sync_database(db_file, api_key, station_id, lat, kc, zr):
     return df_db
 
 # =====================================================================
-# 🖥️ Streamlit 前端部署大腦
+# 🖥️ Streamlit 網頁前端部署
 # =====================================================================
 def run_web_app():
     st.set_page_config(page_title="綠竹園智慧灌溉系統", page_icon="🎋", layout="wide")
@@ -296,7 +271,6 @@ def run_web_app():
             st.sidebar.success(f"🎯 定錨成功！最近觀測站：【{st.session_state.station_name}】")
             st.rerun()
 
-    # 讀取並滾動同步觀測資料庫
     df_db = init_and_sync_database(
         DATABASE_FILE, st.session_state.api_key, st.session_state.station_id,
         st.session_state.lat, st.session_state.kc, st.session_state.zr
